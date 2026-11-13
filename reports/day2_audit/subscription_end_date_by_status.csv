@@ -1,0 +1,5 @@
+churn_flag,is_trial,total_subscriptions,missing_end_dates
+False,False,3814,3814
+False,True,700,700
+True,False,408,0
+True,True,78,0
