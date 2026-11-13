@@ -1,3 +1,8 @@
+# Environment
+.env
+.env.*
+!.env.example
+
 # Python
 __pycache__/
 *.py[cod]
@@ -7,16 +12,16 @@ venv/
 # Jupyter
 .ipynb_checkpoints/
 
-# Environment variables
-.env
-.env.*
+# Raw and temporary data
+data/raw/*
+!data/raw/.gitkeep
 
-# Data files
-# Keep datasets tracked in Git
+data/interim/*
+!data/interim/.gitkeep
 
-# OS files
+data/processed/*
+!data/processed/.gitkeep
+
+# Generated files
 .DS_Store
 Thumbs.db
-
-# Temporary files
-*.log
