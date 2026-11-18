@@ -22,6 +22,9 @@ data/interim/*
 data/processed/*
 !data/processed/.gitkeep
 
+# Temporary files
+*.log
+data/interim/*.db
 # Generated files
 .DS_Store
 Thumbs.db
