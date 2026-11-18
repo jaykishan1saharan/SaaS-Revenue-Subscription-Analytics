@@ -1,0 +1,6 @@
+dataset,id_column,total_rows,null_ids,unique_ids,rows_with_repeated_ids
+accounts,account_id,500,0,500,0
+churn_events,churn_event_id,600,0,600,0
+feature_usage,usage_id,25000,0,24979,42
+subscriptions,subscription_id,5000,0,5000,0
+support_tickets,ticket_id,2000,0,2000,0

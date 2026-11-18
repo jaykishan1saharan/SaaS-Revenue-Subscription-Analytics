@@ -1,120 +1,86 @@
+# Support Tickets Load Validation
+## SaaS Revenue & Subscription Analytics
 
-# Day 4 — Support Tickets Database Load Validation
+**Dataset:** RavenStack Support Tickets  
+**Source File:** support_tickets_clean.csv  
+**Target Table:** public.support_tickets  
+**Expected Rows:** 2,000  
+**Actual Loaded Rows:** 2,000  
+**Status:** Loaded and Validated
+
+---
 
 ## 1. Objective
 
-Validate the cleaned Support Tickets dataset before database analysis and execute initial SQL exploration queries using SQLite.
+Validate the support tickets dataset after loading it into Supabase PostgreSQL. Verify row counts, primary key uniqueness, foreign key relationships, missing values, and ticket chronology.
 
-## 2. Dataset Information
+## 2. Load Summary
 
-- Source: `data/interim/support_tickets_clean.csv`
-- Records loaded: 2,000
-- Columns: 9
-- Database: SQLite
-- Table: `support_tickets`
-- Missing satisfaction scores: 825
+| Metric | Result |
+|---|---:|
+| Expected Rows | 2,000 |
+| Actual Loaded Rows | 2,000 |
+| Difference | 0 |
+| Duplicate Rows (Day 2 Audit) | 0 |
+| Missing Cells (Day 2 Audit) | 825 |
+| Load Status | Passed |
 
-## 3. Data Validation Results
+## 3. Primary Key Validation
 
-All 10 validation checks passed.
+| Column | Constraint | Result |
+|---|---|---|
+| ticket_id | Primary Key | Verified |
+| Duplicate ticket_id values | 0 | Passed |
 
-| Validation | Result |
+## 4. Missing Value Validation
+
+| Column | Missing Count | Percentage |
+|---|---:|---:|
+| satisfaction_score | 825 | 41.25% |
+
+Missing satisfaction scores were preserved as NULL.
+
+## 5. Foreign Key Validation
+
+| Child Table | Foreign Key | Parent Table | Orphan Count |
+|---|---|---|---:|
+| support_tickets | account_id | accounts | 0 |
+
+All tested account references were valid.
+
+## 6. Ticket Date Chronology
+
+| Validation | Invalid Records | Status |
+|---|---:|---|
+| closed_at earlier than submitted_at | 0 | Passed |
+
+## 7. Numeric Range Review
+
+| Column | Minimum | Maximum |
+|---|---:|---:|
+| resolution_time_hours | 1 | 72 |
+| first_response_time_minutes | 1 | 180 |
+| satisfaction_score | 3 | 5 |
+
+The observed satisfaction score range is 3–5. Missing scores remain NULL.
+
+## 8. Final Validation Summary
+
+| Check | Status |
 |---|---|
-| Expected row count | PASS |
-| Unique ticket IDs | PASS |
-| Non-null ticket IDs | PASS |
-| Non-null account IDs | PASS |
-| Account references | PASS |
-| Non-negative resolution time | PASS |
-| Non-negative first response time | PASS |
-| Satisfaction score range (1–5) | PASS |
-| Closed timestamp after submission | PASS |
-| No duplicate complete rows | PASS |
+| Row Count | Passed |
+| Primary Key | Passed |
+| Missing Value Reconciliation | Completed |
+| Foreign Key Relationship | Passed |
+| Ticket Chronology | Passed |
+| Numeric Range Review | Reviewed |
 
-Unmatched account references: 0.
+## 9. Conclusion
 
-## 4. SQLite Load Verification
+All 2,000 support ticket records were loaded successfully into Supabase PostgreSQL.
 
-The cleaned CSV was loaded into the SQLite table `support_tickets`.
+Primary key uniqueness and account relationships were verified. No invalid ticket date sequences were identified.
 
-- Loaded records: 2,000
-- SQL exploration queries executed: 12
-- Query execution errors: 0
-- Final database row count: 2,000
+The 825 missing satisfaction scores were preserved as NULL.
 
-## 5. Initial SQL Findings
-
-### Ticket distribution by priority
-
-| Priority | Ticket Count |
-|---|---:|
-| Urgent | 514 |
-| High | 510 |
-| Medium | 491 |
-| Low | 485 |
-
-### Average resolution time
-
-| Priority | Average Hours |
-|---|---:|
-| High | 36.96 |
-| Low | 36.35 |
-| Medium | 35.59 |
-| Urgent | 34.57 |
-
-### Average first response time
-
-| Priority | Average Minutes |
-|---|---:|
-| High | 91.44 |
-| Low | 91.15 |
-| Medium | 85.86 |
-| Urgent | 85.53 |
-
-### Escalation distribution
-
-- Non-escalated: 1,905
-- Escalated: 95
-
-### Satisfaction score distribution
-
-| Score | Responses |
-|---|---:|
-| 3 | 396 |
-| 4 | 405 |
-| 5 | 374 |
-
-There are 825 missing satisfaction scores. These were retained as NULL and excluded from the score distribution.
-
-### Account-wise ticket volume
-
-The highest observed ticket count for one account was 11.
-
-### Data consistency
-
-- Invalid negative duration records: 0
-- Closed-before-submission records: 0
-- Duplicate ticket records: 0
-
-## 6. Observations
-
-1. Urgent tickets have the highest ticket volume (514).
-2. High-priority tickets have the highest average resolution time (36.96 hours).
-3. Urgent tickets have the lowest average resolution time (34.57 hours).
-4. High-priority tickets also have the highest average first response time (91.44 minutes).
-5. Escalated tickets represent 95 of 2,000 records.
-6. Satisfaction scores are missing for 41.25% of records, which limits satisfaction analysis.
-7. All account references passed the validation check.
-
-These are descriptive findings and do not establish causal relationships.
-
-## 7. Deliverables
-
-- `sql/03_initial_exploration.sql`
-- `src/run_support_ticket_sql.py`
-- `reports/support_tickets_load_validation.md`
-- `data/interim/support_tickets_day4.db`
-
-## 8. Conclusion
-
-The cleaned Support Tickets dataset passed all 10 validation checks and was successfully loaded into SQLite with 2,000 records. All 12 initial SQL exploration queries executed successfully. The dataset is ready for further analytical exploration, subject to the documented missing satisfaction values.
+**Overall Status:** Loaded and Validated
