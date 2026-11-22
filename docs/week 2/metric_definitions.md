@@ -439,3 +439,105 @@ If starting MRR is zero, the rate is undefined (NULL/NA), not zero.
 | Refund and currency treatment | Jaykishan + Madhu Priya | Pending | — |
 
 Do not change `Pending` to `Approved` until the named reviewers have explicitly confirmed the decision. Record actual names, date and decision rationale.
+
+
+---
+
+# Week 2 Day 10 Addendum — Integration Validation
+
+**Integration owner:** Jaykishan  
+**Review date:** 2026-11-22  
+**Status:** Integrated draft; team approval and several independent QA artifacts remain pending.
+
+## 17. Reconciled implementation evidence
+
+The following checks were performed against the Week 2 deliverables supplied for integration:
+
+| Check | Result | Interpretation |
+|---|---:|---|
+| Reporting months in monthly MRR output | 24 | January 2023 through December 2024 |
+| Subscription rows / unique subscription IDs in source | 5,000 / 5,000 | Source subscription grain is unique |
+| Accounts in source | 500 | Customer grain is `account_id` |
+| Meghana monthly MRR vs Yash account roll-up | 24 of 24 months match | Active subscriptions, active accounts, paid accounts and MRR match exactly |
+| Plan MRR subtotal vs total MRR | 24 of 24 months match | Basic + Pro + Enterprise equals total MRR each month |
+| Monthly ARR vs 12 × monthly MRR | 24 of 24 months match | Consistent with row-level source relationship |
+| Yash closing paid accounts vs account roll-up | 24 of 24 months match | Closing eligible paid account counts align |
+| Movement comparison periods | 23 | February 2023 through December 2024 |
+| Movement account-month records | 11,500 | 500 account rows across 23 adjacent-month comparisons |
+
+The checks above establish cross-file consistency for the supplied generated outputs. They do not establish SQL-versus-Python parity against a live PostgreSQL database because the required independent execution evidence was not included in the reviewed package.
+
+## 18. Month-end MRR and movement bridge result
+
+The provisional month-end MRR output reports:
+
+- January 2023 MRR: **4,684 source amount units**.
+- December 2024 MRR: **10,259,509 source amount units**.
+- Net increase across the observed 23 month-to-month intervals: **10,254,825 source amount units**.
+
+The account-level movement file reconciles its summed opening and closing MRR to the adjacent monthly MRR snapshots. The category bridge, however, contains an explicit unclassified positive amount:
+
+| Movement component | Amount (source units) |
+|---|---:|
+| New customer MRR | 2,420,546 |
+| Expansion MRR | 8,260,993 |
+| Reactivated MRR | 94,450 |
+| Less: contraction MRR | (517,763) |
+| Less: churned MRR | (18,507) |
+| Unclassified positive movement / bridge residual | 15,106 |
+| **Net change** | **10,254,825** |
+
+The **15,106** residual is present in four account-month rows across September 2023, February 2024 and October 2024. Those rows are labelled `new_subscription_or_return_unconfirmed`. They have zero opening MRR and positive closing MRR, but the supplied evidence does not establish whether each is a reactivation or an existing-account subscription return/addition. They must remain an explicit unclassified category until event chronology and subscription continuity are reviewed.
+
+`new_subscription_mrr` in the movement CSV is a diagnostic measure of subscription starts. It overlaps with other account-level movement categories and **must not be added as another bridge component**. Adding it would double-count revenue.
+
+**Bridge equation used for this validation:**
+
+```text
+Ending MRR = Starting MRR
+           + New Customer MRR
+           + Expansion MRR
+           + Reactivated MRR
+           - Contraction MRR
+           - Churned MRR
+           + Unclassified positive movement
+```
+
+## 19. Customer and plan churn validation
+
+- Yash's customer population output covers 24 months. January 2023 has no prior month-end opening population, so the opening denominator and churn rate are NULL as required.
+- Under the supplied provisional account churn rule, one distinct eligible account is reported lost in September 2024: 1 / 384 opening paid accounts = **0.2604%**. Other months report zero lost accounts in this output.
+- Churn-event-bearing account counts are not the same as lost-customer counts. They must not be substituted for the customer churn numerator.
+- Meghana's plan churn output contains 72 rows (24 months × 3 plans). It is a subscription-level breakdown attributed to the `plan_tier` on the ended subscription row, not a customer-level plan churn rate. Three plan-month rates are undefined because the opening plan denominator is zero.
+
+These are provisional output results, not independently certified churn metrics. Madhu Priya's event-semantics/reconciliation review and Lav Kumar's independent churn QA evidence were not present in the reviewed handoff.
+
+## 20. Final metric interpretation and publication controls
+
+1. Use `account_id` for distinct customer counts and `subscription_id` for subscription counts and subscription-level revenue.
+2. Sum MRR across every eligible subscription before counting distinct accounts. Do not deduplicate subscriptions by account before summing revenue.
+3. Use `mrr_amount` directly for both monthly and annual billing-frequency rows; do not divide annual rows by 12 again.
+4. Keep trial subscription counts separate from paid customer counts. The source has 778 trial rows, all with zero MRR and ARR.
+5. Do not attach INR/USD symbols to subscription MRR/ARR; currency and unit are not supplied.
+6. Do not apply discounts, multiply by seats, or include refunds/unsupported one-time charges in MRR.
+7. The inclusive `end_date >= snapshot_date` predicate is the convention used by the supplied generated outputs, but remains provisional pending source-owner confirmation.
+8. Keep the 15,106 movement residual visible as unclassified. Do not force it into new customer, expansion or reactivation.
+9. Customer churn requires distinct opening paid accounts, qualifying event evidence, and no eligible paid subscription at closing. An account-level static flag alone does not identify the churn month.
+10. No KPI should be labelled production-approved until the pending issue register and reviewer sign-off are completed.
+
+## 21. Integration approval record
+
+| Review area | Integration finding | Status |
+|---|---|---|
+| Reporting-month coverage | 24 monthly snapshots; 23 movement intervals | Validated against supplied CSV outputs |
+| MRR totals and plan subtotals | Monthly totals and plan sums reconcile | Validated against supplied CSV outputs |
+| Account/subscription population | Yash roll-up matches Meghana MRR output for all 24 months | Validated against supplied CSV outputs |
+| Movement bridge | Opening/closing totals match; 15,106 remains explicitly unclassified | Conditional; follow-up required |
+| Customer churn | Output internally consistent with provisional rule; independent event QA absent | Pending independent review |
+| Plan churn | 72 plan-month rows; subscription-level attribution documented | Provisional |
+| End-date semantics | Inclusive predicate used in outputs | Pending source-owner approval |
+| Currency/unit | Unknown; source amount labels retained | Open source question |
+| SQL/Python parity | No live database/independent execution evidence supplied | Pending |
+| Final Week 2 approval | Not asserted in this draft | Pending team sign-off |
+
+**Integration recommendation:** Accept the supplied MRR and account-population outputs as internally reconciled provisional Week 2 artifacts. Do not describe the complete KPI package as fully signed off until the unclassified movement rows are dispositioned, missing independent QA and churn-event reviews are supplied, the SQL implementation is executed/verified, and the end-date/currency questions are resolved or formally accepted as limitations.

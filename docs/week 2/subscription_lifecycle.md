@@ -242,3 +242,68 @@ The SQL is a pattern, not a final query until active-date and trial rules are si
 
 ---
 **Prepared by:** Jaykishan
+
+
+---
+
+# Week 2 Day 10 Addendum — Integrated Implementation Status
+
+**Owner:** Jaykishan  
+**Review date:** 2026-11-22  
+**Status:** Integrated working document; source semantics and team approvals remain pending.
+
+## 14. Implemented snapshot predicate reviewed
+
+The supplied Meghana Python output and Yash population checks use this provisional inclusive month-end predicate:
+
+```sql
+start_date <= snapshot_date
+AND (end_date IS NULL OR end_date >= snapshot_date)
+```
+
+The output also distinguishes:
+
+- **Active subscription count:** count of eligible `subscription_id` values, including eligible zero-MRR trials.
+- **Active accounts all:** distinct `account_id` values with at least one eligible subscription.
+- **Active paid accounts:** distinct accounts with at least one eligible non-trial subscription with `mrr_amount > 0`.
+- **MRR:** sum of `mrr_amount` over the eligible subscription snapshot. Trial rows remain in subscription counts but contribute zero to MRR in this source.
+
+This is the implemented convention in the supplied CSVs, not proof that `end_date` is inclusive in the source system. The inclusive/exclusive decision must remain open until confirmed by the data owner.
+
+## 15. Integrated population and continuity checks
+
+- Source population: 5,000 unique subscriptions across 500 accounts.
+- Each account has multiple subscription records in the observed source history (2–19 per account).
+- The monthly roll-up CSV and MRR CSV match for all 24 reporting months on active subscription count, active account count, active paid account count and MRR total.
+- Customer count uses distinct `account_id`; subscription count uses distinct `subscription_id`.
+- An additional subscription under an existing account is not automatically a new customer.
+- An account is customer-churned only if it belongs to the opening eligible paid population, has qualifying churn evidence in the period, and has no eligible paid subscription at the closing snapshot.
+
+## 16. Integrated movement QA
+
+The supplied account-level movement file contains 11,500 rows: 500 account rows for each of 23 adjacent-month comparisons. The total opening and closing MRR values match the corresponding month-end MRR snapshots. The movement bridge still has 15,106 source amount units in four `new_subscription_or_return_unconfirmed` rows. Retain these as unclassified until event sequence and account history support a definitive category.
+
+`new_subscription_mrr` is diagnostic and overlapping in the supplied movement output; it is not an additional additive category in the account-level MRR bridge.
+
+## 17. Lifecycle limitations retained
+
+- No raw `subscription_status` column exists.
+- `churn_flag` is a lifecycle marker, not a timestamped cancellation event.
+- `auto_renew_flag` is not proof of successful renewal or active status.
+- `end_date` and `churn_events.churn_date` are not proven to represent the same lifecycle milestone.
+- `is_reactivation` is event-level and account-linked; the event table does not identify the returning subscription ID.
+- `upgrade_flag` / `downgrade_flag` do not provide event timestamps, prior plan, new plan or old/new price.
+- Currency/unit metadata is absent for subscription MRR/ARR.
+- No discount field is available; seats are not used as an MRR multiplier.
+
+## 18. Lifecycle sign-off status
+
+| Rule | Status | Required action |
+|---|---|---|
+| Calendar month boundaries | Recommended and used | Team to confirm convention |
+| Month-end inclusive `end_date` rule | Used provisionally | Source owner / Meghana confirmation |
+| No raw status-column assumption | Confirmed source limitation | Preserve derived labels only |
+| Paid-account population | Used provisionally | Yash / team confirmation |
+| Reactivation event semantics | Not independently validated | Madhu Priya review |
+| Movement residual classification | Open for four account-month rows | Review event history and decide category |
+| Currency/unit label | Unknown | Source owner confirmation or retain unknown |
