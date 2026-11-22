@@ -1,4 +1,3 @@
-
 # KPI Feasibility Matrix — Week 1
 
 ## 1. Purpose
