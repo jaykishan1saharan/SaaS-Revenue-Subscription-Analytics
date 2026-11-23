@@ -17,7 +17,8 @@ EVENT_COLUMNS = {
     "churn_event_id", "account_id", "churn_date", "is_reactivation"
 }
 SUBSCRIPTION_COLUMNS = {
-    "subscription_id", "account_id", "start_date", "end_date", "mrr_amount"
+    "subscription_id", "account_id", "start_date", "end_date", "mrr_amount",
+    "is_trial"
 }
 
 
@@ -85,6 +86,7 @@ def prepare_subscriptions(subscriptions: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("mrr_amount contains missing or non-numeric values")
     if (prepared.mrr_amount < 0).any():
         raise ValueError("mrr_amount contains negative values")
+    prepared["is_trial"] = parse_boolean(prepared["is_trial"], "is_trial")
     reversed_dates = prepared.end_date.notna() & (
         prepared.end_date < prepared.start_date
     )
@@ -290,6 +292,127 @@ def monthly_churn_summary(mapped: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def monthly_lifecycle_reconciliation(
+    churn_events: pd.DataFrame,
+    subscriptions: pd.DataFrame,
+) -> pd.DataFrame:
+    """Calculate lifecycle KPIs from month-end paid-account snapshots."""
+    events = prepare_events(churn_events)
+    subs = prepare_subscriptions(subscriptions)
+
+    mapped = map_churn_events(events, subs)
+    observed_dates = pd.concat([subs.start_date, subs.end_date], ignore_index=True).dropna()
+    if observed_dates.empty:
+        return pd.DataFrame()
+
+    first_month = subs.start_date.min().to_period("M").to_timestamp()
+    last_month = observed_dates.max().to_period("M").to_timestamp()
+    month_starts = pd.date_range(first_month, last_month, freq="MS")
+
+    paid = subs.loc[
+        ~subs.is_trial
+        & subs.mrr_amount.gt(0)
+    ].copy()
+
+    rows = []
+    for month_index, month_start in enumerate(month_starts):
+        if month_index == 0:
+            opening_paid_accounts = 0
+            opening_mrr = 0.0
+            opening_by_account = pd.Series(dtype="float64")
+        else:
+            opening_end = month_start - pd.offsets.Day(1)
+            opening_paid = paid.loc[
+                paid.start_date.le(opening_end)
+                & (paid.end_date.isna() | paid.end_date.ge(opening_end))
+            ]
+            opening_by_account = opening_paid.groupby("account_id").mrr_amount.sum()
+            opening_paid_accounts = int(opening_by_account.shape[0])
+            opening_mrr = float(opening_by_account.sum())
+
+        closing_end = month_start + pd.offsets.MonthEnd(0)
+        closing_paid = paid.loc[
+            paid.start_date.le(closing_end)
+            & (paid.end_date.isna() | paid.end_date.ge(closing_end))
+        ]
+        closing_by_account = closing_paid.groupby("account_id").mrr_amount.sum()
+        closing_paid_accounts = int(closing_by_account.shape[0])
+        closing_mrr = float(closing_by_account.sum())
+
+        month_events = mapped.loc[
+            mapped.churn_date.dt.to_period("M").dt.to_timestamp().eq(month_start)
+        ]
+        candidate_accounts = set(
+            month_events.loc[
+                ~month_events.is_reactivation
+            ].account_id.unique()
+        )
+        reactivation_accounts = set(
+            month_events.loc[
+                month_events.sequence_supported_reactivation
+                & month_events.is_reactivation
+            ].account_id.unique()
+        )
+
+        opening_ids = set(opening_by_account.index)
+        closing_ids = set(closing_by_account.index)
+        lost_ids = candidate_accounts.intersection(opening_ids).difference(closing_ids)
+        churned_mrr = float(opening_by_account.reindex(list(lost_ids)).fillna(0).sum())
+        unique_lost_accounts = len(lost_ids)
+
+        continuing_ids = opening_ids.intersection(closing_ids)
+        account_delta = closing_by_account.reindex(list(continuing_ids)).fillna(0)
+        account_delta = account_delta.subtract(
+            opening_by_account.reindex(list(continuing_ids)).fillna(0)
+        )
+        expansion_mrr = float(account_delta.clip(lower=0).sum())
+        contraction_mrr = float((-account_delta).clip(lower=0).sum())
+
+        supported_reactivation_ids = (
+            reactivation_accounts.intersection(closing_ids).difference(opening_ids)
+        )
+        reactivated_mrr = float(
+            closing_by_account.reindex(list(supported_reactivation_ids)).fillna(0).sum()
+        )
+
+        customer_churn_rate = (
+            unique_lost_accounts / opening_paid_accounts
+            if opening_paid_accounts
+            else None
+        )
+        gross_revenue_churn_rate = (
+            (churned_mrr + contraction_mrr) / opening_mrr
+            if opening_mrr
+            else None
+        )
+        net_revenue_churn_rate = (
+            (churned_mrr + contraction_mrr - expansion_mrr - reactivated_mrr)
+            / opening_mrr
+            if opening_mrr
+            else None
+        )
+
+        rows.append({
+            "report_month": month_start,
+            "opening_paid_accounts": opening_paid_accounts if month_index else pd.NA,
+            "opening_mrr": opening_mrr if month_index else pd.NA,
+            "closing_paid_accounts": closing_paid_accounts,
+            "closing_mrr": closing_mrr,
+            "accounts_with_candidate_churn_events": len(candidate_accounts),
+            "unique_lost_accounts": unique_lost_accounts,
+            "customer_churn_rate": customer_churn_rate,
+            "churned_mrr": churned_mrr,
+            "contraction_mrr": contraction_mrr,
+            "expansion_mrr": expansion_mrr,
+            "reactivated_mrr": reactivated_mrr,
+            "gross_revenue_churn_rate": gross_revenue_churn_rate,
+            "net_revenue_churn_rate": net_revenue_churn_rate,
+            "status": "provisional" if month_index else "opening_snapshot_unavailable",
+        })
+
+    return pd.DataFrame(rows)
+
+
 def run_pipeline(
     events_path: str | Path = DEFAULT_EVENTS,
     subscriptions_path: str | Path = DEFAULT_SUBSCRIPTIONS,
@@ -298,13 +421,16 @@ def run_pipeline(
     events, subscriptions = load_sources(events_path, subscriptions_path)
     mapped = map_churn_events(events, subscriptions)
     monthly = monthly_churn_summary(mapped)
+    lifecycle = monthly_lifecycle_reconciliation(events, subscriptions)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     event_file = output_dir / "churn_event_analysis.csv"
     monthly_file = output_dir / "monthly_churn_summary.csv"
+    lifecycle_file = output_dir / "monthly_lifecycle_churn.csv"
     mapped.to_csv(event_file, index=False, date_format="%Y-%m-%d")
     monthly.to_csv(monthly_file, index=False, date_format="%Y-%m-%d")
+    lifecycle.to_csv(lifecycle_file, index=False, date_format="%Y-%m-%d")
 
     print("Churn analysis completed")
     print(f"Recorded event rows: {len(mapped)}")
@@ -316,6 +442,7 @@ def run_pipeline(
     print(f"Monthly churned MRR: {monthly.churned_mrr.sum():.2f}")
     print(f"Saved: {event_file}")
     print(f"Saved: {monthly_file}")
+    print(f"Saved: {lifecycle_file}")
     return mapped, monthly
 
 
