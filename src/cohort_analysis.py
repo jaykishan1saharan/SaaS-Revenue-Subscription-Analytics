@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import pandas as pd
+import numpy as np
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_ACCOUNTS = ROOT_DIR / "data/raw/ravenstack_accounts.csv"
@@ -265,8 +266,11 @@ def run_pipeline(
 
     cohorts.to_csv(cohort_file, index=False, date_format="%Y-%m-%d")
     activity.to_csv(activity_file, index=False, date_format="%Y-%m-%d")
+    retention_matrix, retention_by_plan = save_retention_outputs(
+        cohorts, subscriptions, activity, output_dir
+    )
 
-    print("Cohort pipeline completed.")
+    print("Cohort and retention pipeline completed.")
     print(f"Eligible cohort accounts: {cohorts.account_id.nunique()}")
     print(f"Cohort months: {cohorts.cohort_month.nunique()}")
     print(f"Customer-month rows: {len(activity)}")
@@ -284,6 +288,108 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
     run_pipeline(args.accounts, args.subscriptions, args.output_dir)
+
+
+# ---------------------------------------------------------------------------
+# Week 3 Day 12: reusable cohort retention calculations
+# ---------------------------------------------------------------------------
+
+def create_retention_matrix(
+    cohorts: pd.DataFrame,
+    customer_month_activity: pd.DataFrame,
+    last_observed_month: str | pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Return one row per cohort and one retention_pct column per cohort age.
+
+    A missing cohort-age observation is NULL (NaN), not zero. An observed
+    month with no active customers is 0%. Customer counts use account_id.
+    """
+    required_cohorts = {"account_id", "cohort_month"}
+    required_activity = {"account_id", "cohort_month", "activity_month", "active_customer"}
+    require_columns(cohorts, required_cohorts, "cohorts")
+    require_columns(customer_month_activity, required_activity, "customer_month_activity")
+    c = cohorts.copy()
+    a = customer_month_activity.copy()
+    c["cohort_month"] = pd.to_datetime(c["cohort_month"]).dt.to_period("M").dt.to_timestamp()
+    a["cohort_month"] = pd.to_datetime(a["cohort_month"]).dt.to_period("M").dt.to_timestamp()
+    a["activity_month"] = pd.to_datetime(a["activity_month"]).dt.to_period("M").dt.to_timestamp()
+    if c.account_id.duplicated().any():
+        raise ValueError("cohorts must contain one row per account_id")
+    if a.duplicated(["account_id", "activity_month"]).any():
+        raise ValueError("activity must be unique at account_id x activity_month")
+    if last_observed_month is None:
+        last_observed_month = a.activity_month.max()
+    last_observed_month = pd.Timestamp(last_observed_month).to_period("M").to_timestamp()
+    sizes = c.groupby("cohort_month").account_id.nunique()
+    active = a.loc[a.active_customer.astype(bool)].groupby(
+        ["cohort_month", "activity_month"]
+    ).account_id.nunique()
+    max_age = max((last_observed_month.year - c.cohort_month.min().year) * 12
+                  + last_observed_month.month - c.cohort_month.min().month, 0)
+    rows = []
+    for cohort_month, size in sizes.items():
+        row = {"cohort_month": cohort_month, "cohort_size": int(size)}
+        for age in range(max_age + 1):
+            target = cohort_month + pd.DateOffset(months=age)
+            if target > last_observed_month:
+                row[f"month_{age}"] = np.nan
+            else:
+                count = int(active.get((cohort_month, target), 0))
+                row[f"month_{age}"] = round(count / size * 100, 4) if size else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values("cohort_month").reset_index(drop=True)
+
+
+def create_retention_by_plan(
+    cohorts: pd.DataFrame,
+    subscriptions: pd.DataFrame,
+    customer_month_activity: pd.DataFrame,
+    last_observed_month: str | pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Retention by first qualifying paid plan; plan changes do not reassign cohort."""
+    require_columns(subscriptions, {"account_id", "subscription_id", "start_date", "plan_tier", "mrr_amount", "is_trial"}, "subscriptions")
+    first_paid = subscriptions.loc[(~subscriptions.is_trial.astype(bool)) & (pd.to_numeric(subscriptions.mrr_amount) > 0)].copy()
+    first_paid["start_date"] = pd.to_datetime(first_paid.start_date)
+    first_paid = first_paid.sort_values(["account_id", "start_date", "subscription_id"], kind="stable").drop_duplicates("account_id")
+    plan = first_paid[["account_id", "plan_tier"]].rename(columns={"plan_tier": "cohort_plan_tier"})
+    c = cohorts.merge(plan, on="account_id", how="left", validate="one_to_one")
+    a = customer_month_activity.merge(c[["account_id", "cohort_plan_tier"]], on="account_id", how="left", validate="many_to_one")
+    if last_observed_month is None:
+        last_observed_month = pd.to_datetime(a.activity_month).max()
+    last_observed_month = pd.Timestamp(last_observed_month).to_period("M").to_timestamp()
+    c["cohort_month"] = pd.to_datetime(c.cohort_month).dt.to_period("M").dt.to_timestamp()
+    a["cohort_month"] = pd.to_datetime(a.cohort_month).dt.to_period("M").dt.to_timestamp()
+    a["activity_month"] = pd.to_datetime(a.activity_month).dt.to_period("M").dt.to_timestamp()
+    sizes = c.groupby(["cohort_month", "cohort_plan_tier"]).account_id.nunique().rename("cohort_size")
+    active = a.loc[a.active_customer.astype(bool)].groupby(
+        ["cohort_month", "cohort_plan_tier", "activity_month"]
+    ).account_id.nunique()
+    max_age = max((last_observed_month.year - c.cohort_month.min().year) * 12
+                  + last_observed_month.month - c.cohort_month.min().month, 0)
+    rows = []
+    for (cohort_month, plan_tier), size in sizes.items():
+        row = {"cohort_month": cohort_month, "cohort_plan_tier": plan_tier, "cohort_size": int(size)}
+        for age in range(max_age + 1):
+            target = cohort_month + pd.DateOffset(months=age)
+            if target > last_observed_month:
+                row[f"month_{age}"] = np.nan
+            else:
+                count = int(active.get((cohort_month, plan_tier, target), 0))
+                row[f"month_{age}"] = round(count / size * 100, 4) if size else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values(["cohort_month", "cohort_plan_tier"]).reset_index(drop=True)
+
+
+def save_retention_outputs(cohorts, subscriptions, customer_month_activity, output_dir=DEFAULT_OUTPUT):
+    """Save Day 12 overall and first-paid-plan cohort retention CSVs."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    last_month = pd.to_datetime(customer_month_activity.activity_month).max()
+    matrix = create_retention_matrix(cohorts, customer_month_activity, last_month)
+    by_plan = create_retention_by_plan(cohorts, subscriptions, customer_month_activity, last_month)
+    matrix.to_csv(output_dir / "cohort_retention_matrix.csv", index=False, date_format="%Y-%m-%d")
+    by_plan.to_csv(output_dir / "cohort_retention_by_plan.csv", index=False, date_format="%Y-%m-%d")
+    return matrix, by_plan
 
 
 if __name__ == "__main__":
